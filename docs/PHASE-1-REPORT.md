@@ -4,6 +4,17 @@ Date: 2026-11-02
 Scope: Next.js foundation, Prisma 7 schema ownership, streaming upload, FastAPI media service skeleton.
 **Phase 2 was not started.**
 
+> **Document status — historical record, revised later.**
+> This report is the Phase 1 *implementation* record, written before the database
+> was provisioned. Statements such as "migration BLOCKED" and "credentials absent"
+> were accurate on the date of that audit and are kept for the audit trail. They
+> have since been resolved; the authoritative current status is
+> [`docs/PHASE-1-FINAL-ACCEPTANCE-REPORT.md`](./PHASE-1-FINAL-ACCEPTANCE-REPORT.md)
+> (**FINAL: GO**). Corrections are marked inline with **RESOLVED**.
+>
+> Sections affected: §2 (migration row), §6 (env files), §8 (rows 10 and 14–19),
+> §11, §13 (rows 9 and 11–13), §14.
+
 Status vocabulary: PASS / FAIL / BLOCKED / NOT TESTED.
 
 ---
@@ -31,9 +42,9 @@ without any feature that belongs to a later phase.
 | Streaming upload route with SHA-256, size and type validation | Done, HTTP path blocked on DB |
 | Prisma 7 config, schema (Project, Asset), generated client, singleton | Done |
 | FastAPI service: `/api/health`, `/api/health/db`, CORS, SQLAlchemy wiring | Done, tested live |
-| SQLAlchemy read-only models + schema parity test | Done, parity BLOCKED without DB |
+| SQLAlchemy read-only models + schema parity test | Done; parity **BLOCKED at the time** (no DB) — **RESOLVED**: parity now runs and passes (8 passed total) |
 | `.env.example` files (root + media service) | Done |
-| Database migration | **Not created — BLOCKED** (no credentials) |
+| Database migration | **BLOCKED at the time** (no credentials) — **RESOLVED**: `20261102065701_init` created and applied; `projects` + `assets` live (see final acceptance report §7) |
 
 Explicitly **not** implemented (later phases): transcription, video processing,
 AI chat, timeline editor, export. Sidebar entries for Exports/Settings are
@@ -83,7 +94,7 @@ not modified.**
 ├── docs/                      architecture, roadmap, phase reports
 ├── prisma/
 │   ├── schema.prisma          Project, Asset, enums
-│   └── migrations/            (empty — BLOCKED, no database credentials)
+│   └── migrations/            (empty at the time; now 20261102065701_init applied)
 ├── src/
 │   ├── app/
 │   │   ├── layout.tsx         shell
@@ -154,6 +165,10 @@ No `.env.local` or `media-service/.env` was created — inventing credentials wa
 explicitly forbidden. `.gitignore` ignores `.env` and `.env.*` while keeping
 `!.env.example`.
 
+> **RESOLVED (later).** Both files now exist locally, are gitignored, and all four
+> connections (`DATABASE_URL`, `SHADOW_DATABASE_URL`, `WEB_DATABASE_URL`,
+> `MEDIA_DATABASE_URL`) authenticate. See the final acceptance report §2 and §6.
+
 ---
 
 ## 7. Database schema
@@ -201,12 +216,27 @@ Executed on this machine, in this order. Nothing below is inferred.
 | 11 | FastAPI live server | `uvicorn` on :8124 | `/api/health` 200, `/docs` 200, `/health/db` 503 | PASS |
 | 12 | `.gitignore` enforcement | `git check-ignore` × 8 paths | all IGNORED | PASS |
 | 13 | Git leak check | `git status --porcelain` | no `.env`, media, `node_modules`, or venv entries | PASS |
-| 14 | Prisma migration status | `npx prisma migrate status` | `Error: Connection url is empty` (exit 1) | **BLOCKED** |
-| 15 | Initial migration creation | `prisma migrate dev` | not attempted — requires a database | **BLOCKED** |
-| 16 | SQLAlchemy ↔ Prisma parity | `pytest tests/test_schema_parity.py` | 5 skipped (no `MEDIA_DATABASE_URL`) | **BLOCKED** |
-| 17 | DB access-boundary probe | `npm run verify:db-access` | prints `BLOCKED`, exit 2 | **BLOCKED** |
-| 18 | Create project / upload over HTTP | UI + `/api/upload` | needs `projects` table; route returns 503 without DB | **NOT TESTED** |
-| 19 | Project persists across restart | — | requires database | **NOT TESTED** |
+| 14 | Prisma migration status | `npx prisma migrate status` | `Error: Connection url is empty` (exit 1) | **BLOCKED** → **RESOLVED** (§8.1) |
+| 15 | Initial migration creation | `prisma migrate dev` | not attempted — requires a database | **BLOCKED** → **RESOLVED** (§8.1) |
+| 16 | SQLAlchemy ↔ Prisma parity | `pytest tests/test_schema_parity.py` | 5 skipped (no `MEDIA_DATABASE_URL`) | **BLOCKED** → **RESOLVED** (§8.1) |
+| 17 | DB access-boundary probe | `npm run verify:db-access` | prints `BLOCKED`, exit 2 | **BLOCKED** → **RESOLVED** (§8.1) |
+| 18 | Create project / upload over HTTP | UI + `/api/upload` | needs `projects` table; route returns 503 without DB | **NOT TESTED** → **RESOLVED: PASS** (§8.1) |
+| 19 | Project persists across restart | — | requires database | **NOT TESTED** → **RESOLVED: PASS** (§8.1) |
+
+### 8.1 Post-audit resolution (later the same day)
+
+The rows above are exactly what was executed **for this report**; nothing in the
+table is rewritten. Rows 10 and 14–19 were later unblocked:
+
+| Row | Then | Now | Evidence |
+| --- | --- | --- | --- |
+| 10 | 3 passed, 5 skipped | **8 passed** | `pytest -q` in the final acceptance report §8 |
+| 14 | `migrate status` → "Connection url is empty" | connected; migration applied | `_prisma_migrations.finished_at` set, checksum `7a796de2584da385…` |
+| 15 | initial migration not attempted | **`20261102065701_init` applied** | `prisma/migrations/20261102065701_init/` |
+| 16 | parity tests skipped | **passing** (part of the 8) | parity runs against the real `information_schema` |
+| 17 | `verify:db-access` BLOCKED | **10/10 PASS** (owner-run); 33 unit tests pass | final acceptance report §6 |
+| 18 | create/upload NOT TESTED | **PASS over HTTP** | upload 201, 415 for wrong MIME, traversal contained — §5 |
+| 19 | persistence NOT TESTED | **PASS** | row created as `aivideo_web` and rendered on `/`, `/projects`, detail |
 
 ### Streaming verification detail (`npm run verify:storage`)
 
@@ -283,9 +313,14 @@ this report, and any system package, MariaDB configuration, or other database.
 
 ---
 
-## 11. Blockers
+## 11. Blockers (historical — all resolved)
 
-**MySQL credentials are absent.** Specifically:
+> **RESOLVED (later).** Every item below now works: the four connections were
+> verified (final acceptance report §2), the `init` migration is applied, both
+> databases exist, and `aivideo_web` holds table-scoped `SELECT, INSERT` only.
+> The text is preserved as the record of this audit.
+
+**MySQL credentials were absent at the time of this audit.** Specifically:
 
 | Missing | Needed for | Consequence |
 | --- | --- | --- |
@@ -297,6 +332,9 @@ this report, and any system package, MariaDB configuration, or other database.
 Also outstanding: the `aivideo` database exists but is **empty** (`aivideo_shadow`
 not created), and no initial migration has been generated because generating one
 requires a reachable database.
+
+> **RESOLVED.** `aivideo` now contains `projects`, `assets`, `_prisma_migrations`;
+> `aivideo_shadow` exists and is empty, as a shadow database should be.
 
 No password guessing was attempted, no users or databases were created, no
 MariaDB configuration was changed, and no other database was touched (the
@@ -338,15 +376,20 @@ server's 16 schemas are unchanged).
 | 6 | Prisma CLI reads configuration | **PASS** | "Loaded Prisma config from prisma.config.ts" |
 | 7 | Environment examples complete | **PASS** | root + media-service templates, placeholders only |
 | 8 | `.gitignore` protects credentials and media | **PASS** | 8/8 paths IGNORED; no leaks in `git status` |
-| 9 | Upload streams | **PASS (storage layer)** / **NOT TESTED (HTTP)** | 42 MB streamed, +33.5 MB RSS; HTTP route needs DB |
+| 9 | Upload streams | **PASS (storage layer)** / **NOT TESTED (HTTP)** → **RESOLVED: PASS** | 42 MB streamed, +33.5 MB RSS; the HTTP route later returned 201 (final acceptance report §5) |
 | 10 | FastAPI health endpoint works | **PASS** | `/api/health` 200, `/health/db` 503 without DB |
-| 11 | Database structure + repository access prepared | **PASS (code)** / **BLOCKED (migration)** | schema, singleton, repositories exist; no migration applied |
-| 12 | Database access-boundary test prepared | **PASS (prepared)** / **BLOCKED (execution)** | `verify:db-access` exists, correctly reports BLOCKED |
-| 13 | No changes to other databases | **PASS** | 16 schemas unchanged; MariaDB service untouched |
+| 11 | Database structure + repository access prepared | **PASS (code)** / **BLOCKED (migration)** → **RESOLVED: PASS** | schema, singleton, repositories exist; `init` migration later applied |
+| 12 | Database access-boundary test prepared | **PASS (prepared)** / **BLOCKED (execution)** → **RESOLVED: 10/10 PASS** | `verify:db-access` exists; 33 unit tests cover its classification |
+| 13 | No changes to other databases | **PASS** | 16 schemas unchanged at the time (18 observed later, none created by this project); MariaDB service untouched |
 
 ---
 
-## 14. Final status
+## 14. Final status (historical)
+
+> **SUPERSEDED.** The two blocked items were resolved and every criterion now
+> passes. Current verdict: **FINAL GO** —
+> [`docs/PHASE-1-FINAL-ACCEPTANCE-REPORT.md`](./PHASE-1-FINAL-ACCEPTANCE-REPORT.md).
+> The paragraphs below are the original conclusion, kept unchanged.
 
 **Phase 1 implementation: PASS with two blocked items.**
 
@@ -371,6 +414,13 @@ GRANT ALL PRIVILEGES ON aivideo_shadow.* TO 'aivideo_migrator'@'localhost';
 GRANT SELECT ON aivideo.* TO 'aivideo_web'@'localhost';
 GRANT SELECT ON aivideo.* TO 'aivideo_media'@'localhost';
 ```
+
+> **What was actually applied (differs from this draft).** `aivideo_web` received
+> table-scoped `SELECT, INSERT` on `projects` and `assets` — not a database-wide
+> `SELECT` — and `aivideo_media` `SELECT ON aivideo.*`. An accidental global
+> `GRANT … ON *.* WITH GRANT OPTION` was later found on `aivideo_web` and revoked;
+> see `docs/PHASE-1-PRIVILEGE-ROOT-CAUSE-AUDIT.md` and the final acceptance
+> report §6.
 
 Then, with credentials in `.env.local` and `media-service/.env`:
 

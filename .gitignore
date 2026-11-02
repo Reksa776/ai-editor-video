@@ -48,3 +48,9 @@ data/
 .cache/
 coverage/
 .DS_Store
+akses database local.txt
+
+# ---- Editor swap/backup files (can contain unsaved secret file contents) ----
+*.kate-swp
+*.swp
+*.swo

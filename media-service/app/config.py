@@ -4,12 +4,34 @@ Reads configuration from the environment only. No secrets are hardcoded and no
 default password is ever used. If MEDIA_DATABASE_URL is missing, the service
 still starts and reports `not_configured` from /health so that the rest of the
 foundation can be exercised.
+
+Environment loading:
+    `media-service/.env` is loaded explicitly from a path resolved against this
+    module (not the current working directory), so `uvicorn app.main:app` works
+    the same whether it is started from media-service/ or from the repo root.
+    `override=False` keeps shell/CI exports authoritative over file values. A
+    missing .env file is silent: every lookup still falls back to the ambient
+    process environment and to the defaults below.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# app/config.py -> app/ -> media-service/ -> media-service/.env
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
+
+def load_env_file() -> bool:
+    """Load media-service/.env. Exported variables are never overridden."""
+    return load_dotenv(dotenv_path=ENV_FILE, override=False, encoding="utf-8")
+
+
+load_env_file()
 
 
 @dataclass(frozen=True)

@@ -1,60 +1,120 @@
 /**
- * Database access-boundary verification (one writer per table).
+ * Database access-boundary verification for the Phase 1 schema.
  *
- * Expectations once MySQL is provisioned:
- *   - writing `projects` as the Next.js runtime user  -> SUCCEEDS
- *   - writing `jobs`     as the Next.js runtime user  -> REJECTED by MySQL
+ * Context: this script used to load no env file, so `WEB_DATABASE_URL` was
+ * invisible to `tsx` and the run always ended in BLOCKED. It also probed a
+ * `jobs` table (Phase 2) and deleted a probe project afterwards, which required
+ * DELETE rights the web account is not supposed to have.
  *
- * Without credentials this script reports BLOCKED and exits 2. It never
- * guesses passwords and never touches other databases.
+ * Now:
+ *   - `src/lib/env-loader.ts` loads `.env` → `.env.local` (shell wins).
+ *   - only `projects` and `assets` are probed.
+ *   - INSERT is proven inside a rolled-back transaction; nothing is committed
+ *     and no DELETE privilege is needed.
+ *   - UPDATE/DELETE are probed with `WHERE 1 = 0`, so even a mis-granted
+ *     account cannot modify data.
+ *
+ * Exit codes: 0 all checks PASS, 1 at least one FAIL, 2 configuration missing.
+ * No credential or connection string is ever printed.
  *
  * Run: npm run verify:db-access
  */
+import type { PrismaClient } from "../src/generated/prisma/client";
+import { runVerification, type ProbeClient } from "../src/lib/db-access-verify";
+import { describeDatabaseError } from "../src/lib/db-error";
+import { loadEnvironment } from "../src/lib/env-loader";
 import { getPrisma } from "../src/lib/prisma";
-import { ulid } from "../src/lib/id";
+import { redactSecrets } from "../src/lib/redact";
 
-async function main(): Promise<void> {
-  let prisma;
+type RawClient = {
+  $queryRawUnsafe<T = unknown>(sql: string, ...values: unknown[]): Promise<T>;
+  $executeRawUnsafe(sql: string, ...values: unknown[]): Promise<number>;
+};
+
+/** Sentinel used to force a rollback; never a real failure. */
+class RollbackSignal extends Error {
+  constructor() {
+    super("rollback");
+    this.name = "RollbackSignal";
+  }
+}
+
+function probeFor(
+  raw: RawClient,
+  rollback?: (work: (client: ProbeClient) => Promise<void>) => Promise<void>,
+): ProbeClient {
+  return {
+    async query(sql, params = []) {
+      const rows = await raw.$queryRawUnsafe<unknown>(sql, ...params);
+      return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+    },
+    async execute(sql, params = []) {
+      const affected = await raw.$executeRawUnsafe(sql, ...params);
+      return typeof affected === "number" ? affected : Number(affected ?? 0);
+    },
+    rollbackTransaction(work) {
+      if (!rollback) {
+        throw new Error("nested transactions are not supported by the probe client");
+      }
+      return rollback(work);
+    },
+  };
+}
+
+async function main(): Promise<number> {
+  const env = loadEnvironment();
+  console.log(
+    `env: loaded ${env.loaded.join(", ") || "none"} (missing: ${env.missing.join(", ") || "none"})`,
+  );
+
+  let prisma: PrismaClient | null = null;
   try {
     prisma = getPrisma();
   } catch (error) {
-    console.log("BLOCKED  WEB_DATABASE_URL is not configured");
-    console.log(`         ${(error as Error).message}`);
-    process.exit(2);
+    console.log(redactSecrets(`BLOCKED  ${describeDatabaseError(error)}`));
+    console.log("         copy .env.example to .env.local and add the aivideo_web credentials");
+    return 2;
   }
 
-  const projectId = ulid();
+  const client = prisma;
   try {
-    await prisma.project.create({ data: { id: projectId, name: "__boundary_probe__" } });
-    console.log("PASS  write to projects succeeded (web owns projects)");
-  } catch (error) {
-    console.log(`BLOCKED  could not write projects: ${(error as Error).message.split("\n")[0]}`);
-    process.exit(2);
-  }
+    const rollback = async (work: (probe: ProbeClient) => Promise<void>): Promise<void> => {
+      try {
+        await client.$transaction(async (tx) => {
+          await work(probeFor(tx as unknown as RawClient));
+          throw new RollbackSignal();
+        });
+      } catch (error) {
+        // Only our own sentinel is expected; a real rollback failure must surface.
+        if (!(error instanceof RollbackSignal)) {
+          throw error;
+        }
+      }
+    };
 
-  let rejected = false;
-  try {
-    // `jobs` does not exist yet and is media-owned; either error proves the
-    // boundary, but a privilege error is the expected outcome once it exists.
-    await prisma.$executeRawUnsafe(
-      "INSERT INTO jobs (id, project_id, tool_name, idempotency_key, status) VALUES ('x','x','x','x','queued')",
-    );
-  } catch (error) {
-    const message = (error as Error).message;
-    rejected = /denied|doesn't exist|not exist|Unknown column/i.test(message);
-    console.log(`PASS  write to jobs rejected: ${message.split("\n")[0]}`);
-  }
+    const checks = await runVerification(probeFor(client as unknown as RawClient, rollback));
 
-  await prisma.project.delete({ where: { id: projectId } }).catch(() => undefined);
+    console.log("");
+    for (const check of checks) {
+      console.log(
+        `${check.status.padEnd(5)} ${check.id.padEnd(24)} ${redactSecrets(`${check.label} — ${check.detail}`)}`,
+      );
+    }
 
-  if (!rejected) {
-    console.log("FAIL  write to jobs was not rejected");
-    process.exit(1);
+    const failed = checks.filter((check) => check.status === "FAIL");
+    console.log("");
+    console.log(`${checks.length - failed.length}/${checks.length} checks passed`);
+    return failed.length === 0 ? 0 : 1;
+  } finally {
+    await client.$disconnect();
   }
-  console.log("Access boundary verified.");
 }
 
-main().catch((error) => {
-  console.error("verification crashed:", error);
-  process.exit(1);
-});
+main()
+  .then((code) => {
+    process.exit(code);
+  })
+  .catch((error: unknown) => {
+    console.error(redactSecrets(`FATAL  ${describeDatabaseError(error)}`));
+    process.exit(1);
+  });
