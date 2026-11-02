@@ -1,0 +1,63 @@
+// Prisma 7 requires the `prisma-client` generator with an explicit output path.
+// The generated client is gitignored and rebuilt with `npm run db:generate`.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Connection URL is configured in prisma.config.ts (required in Prisma 7).
+datasource db {
+  provider = "mysql"
+}
+
+enum ProjectStatus {
+  ACTIVE   @map("active")
+  ARCHIVED @map("archived")
+}
+
+enum AssetKind {
+  SOURCE   @map("source")
+  DERIVED  @map("derived")
+  PREVIEW  @map("preview")
+  EXPORT   @map("export")
+  AUDIO    @map("audio")
+  SUBTITLE @map("subtitle")
+}
+
+/// Owned (writable) by the Next.js service.
+model Project {
+  id        String        @id @db.Char(26)
+  name      String        @db.VarChar(200)
+  status    ProjectStatus @default(ACTIVE)
+  settings  Json?
+  createdAt DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.DateTime(3)
+
+  assets Asset[]
+
+  @@index([createdAt])
+  @@index([status])
+  @@map("projects")
+}
+
+/// Owned (writable) by the Next.js service. Files live on disk; only the
+/// relative path and probe metadata are stored here (never a BLOB).
+model Asset {
+  id        String    @id @db.Char(26)
+  projectId String    @map("project_id") @db.Char(26)
+  kind      AssetKind @default(SOURCE)
+  relPath   String    @map("rel_path") @db.VarChar(500)
+  filename  String    @db.VarChar(255)
+  mimeType  String    @map("mime_type") @db.VarChar(100)
+  sha256    String    @db.Char(64)
+  bytes     BigInt
+  durationS Decimal?  @map("duration_s") @db.Decimal(10, 3)
+  probe     Json?
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([sha256])
+  @@map("assets")
+}
